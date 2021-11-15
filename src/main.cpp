@@ -3,72 +3,148 @@
 #include <Adafruit_SSD1306.h>
 #include <EEPROM.h>
 #include <Wire.h>
-
+#include <SPI.h>
+#include <SD.h>
 Adafruit_SSD1306 display(128, 64, &Wire, -1);
-#define line(x, y, x2, y2); display.drawLine(x, y, x2, y2, 2);
+#define line(x, y, x2, y2) \
+  ;                        \
+  display.drawLine(x, y, x2, y2, 2);
 #define upd display.display();
 #define getAmp ((getVolt() - offset) * 1000 / 50)
 #define conf_num 4
 #define C_MPS 0
 #define C_HIST 1
 #define C_SAMP 2
-#define C_HIST_MAX 100
-#define st(p) !digitalRead(p)
+#define C_LOG 3
+#define C_HIST_MAX 80
+#define st(p) (!digitalRead(p))
+/*
+pinmap:
+I2C:A4,A5
+Button:3,4,5
+SPI(SD):13,12,11,10
+*/
 //button
-int bt_pin[3] = {1, 2, 3};
-long bt_state[3] = {0, 0, 0};
+char bt_pin[3] = {2, 3, 4};
+bool bt_state[3] = {0, 0, 0};
 bool bt_trig[3] = {0, 0, 0};
-
 //config
-int conf_list[conf_num] = {
-    10, //mps
+uint8_t conf_list[conf_num] = {
+    10, //fps
     40, //hist
-    10  //samples
+    10, //samples
+    2   //log
 };
-bool conf_flag=false;
+const unsigned char conf_min[conf_num] PROGMEM = {
+    1, 2, 1, 0};
+const unsigned char conf_max[conf_num] PROGMEM = {
+    30, 79, 30, 20};
+
+bool conf_flag = false;
 float offset = 0;
+bool SD_OK;
 
-void text(String text, int posx = -1, int posy = -1)
-{
-  if (posx != -1 && posy != -1)
-    display.setCursor(posx, posy);
-  display.print(text);
-}
-
+//values
+double rangeB = 0;
+double rangeU = 0;
+double avg = 0;
+float amphist[C_HIST_MAX];
+unsigned long btupdate = 0;
+unsigned long update = 0;
+unsigned long hupdate = 0;
+unsigned long lupdate = 0;
 float getVolt()
 {
-  double sum = 0;
+  float sum = 0;
   for (int i = 0; i < 10; i++)
   {
     sum += analogRead(A0) * 5.0 / 1024;
   }
   return sum / 10;
 }
-int maxv, minv;
+void text(String text, int posx = -1, int posy = -1)
+{
+  if (posx != -1 && posy != -1)
+  {
+    display.setCursor(posx, posy);
+  }
+  display.print(text);
+}
+bool conf_load()
+{
+  uint8_t t_value = 0;
+  if (EEPROM.read(0) == 254)
+  {
+    for (int i = 0; i < conf_num; i++)
+    {
+      t_value = EEPROM.read(i + 1);
+      if (t_value <= conf_min[i] && t_value >= conf_max[i]&&t_value==0)
+        return 0;
+      conf_list[i] = t_value-1;
+    }
+  }
+  else
+  {
+    return 0;
+  }
+  return 1;
+}
+void conf_save()
+{
+  EEPROM.write(0, 254);
+  for (int i = 0; i < conf_num; i++)
+  {
+    EEPROM.write(i + 1, conf_list[i]+1);
+  }
+}
 void setup()
 {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   delay(100);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.clearDisplay();
   delay(100);
+  digitalWrite(LED_BUILTIN, LOW);
   text("offset:", 0, 0);
   offset = getVolt();
-  text(String(offset));
+  text(String(offset, 3));
+  digitalWrite(LED_BUILTIN, HIGH);
+  text("config loading:", 0, 7 * 1);
+  text(conf_load() ? "OK" : "failed");
+  text("SD initalize:", 0, 7 * 2);
+  Serial.begin(115200);
+  SD_OK = SD.begin(10);
+  text(SD_OK ? "OK" : "failed");
   upd
-  delay(500);
+      delay(2000);
   display.clearDisplay();
   pinMode(bt_pin[0], INPUT_PULLUP);
   pinMode(bt_pin[1], INPUT_PULLUP);
   pinMode(bt_pin[2], INPUT_PULLUP);
+  SD.remove("log.csv");
+
+  File dataFile = SD.open("log.csv", FILE_WRITE);
+  if (dataFile)
+  {
+    dataFile.println("sec,A");
+    dataFile.close();
+  }
 }
-double rangeB = 0;
-double rangeU = 0;
-double avg = 0;
-double amphist[C_HIST_MAX];
+void SD_log(String text)
+{
+  File dataFile = SD.open("log.csv", FILE_WRITE);
+  if (dataFile)
+  {
+    dataFile.println(text);
+    dataFile.close();
+  }
+}
 void histupdate()
 {
+  avg = 0;
   rangeB = 0;
   rangeU = 0;
 
@@ -85,12 +161,18 @@ void histupdate()
   rangeU = max(amphist[conf_list[C_HIST] - 1], rangeU);
   avg /= conf_list[C_HIST];
 }
-long update = 0;
+void logupdate()
+{
+  if (SD_OK)
+    SD_log(String((float)millis() / 1000, 1) + "," + String(amphist[C_HIST], 1));
+  Serial.println(String((float)millis() / 1000, 1) + "," + String(amphist[C_HIST], 1));
+}
+
 #define GH 51
 #define GSX 25
 void gPlot()
 {
-  histupdate();
+
   display.clearDisplay();
   line(GSX - 1, 0, GSX - 1, 55);
   line(GSX - 1, 55, 127, 55);
@@ -126,6 +208,7 @@ void gPlot()
   text("Avg:", 0, 56);
   text(String(avg, avg >= 10 || avg <= -10 ? 1 : 2));
   text("A");
+  display.drawPixel(127, 63, SD_OK);
   upd
 }
 char conf_index = 0;
@@ -137,8 +220,9 @@ void bt_update()
     {
       bt_state[i] = true;
       bt_trig[i] = true;
+      digitalWrite(LED_BUILTIN, HIGH);
     }
-    else if (st(bt_pin[i]) && !bt_state[i])
+    else if (!st(bt_pin[i]) && bt_state[i])
     {
       bt_state[i] = false;
     }
@@ -146,11 +230,12 @@ void bt_update()
 }
 void config()
 {
+  display.clearDisplay();
   text("config", 0, 0);
-  display.drawRect(8, (conf_index + 1) * 7 + 3, 127, (conf_index + 1) * 7 + 10, INVERSE);
+
   if (bt_trig[0])
   {
-    conf_index < 4 ? conf_index++ : conf_index = 0;
+    conf_index < 5 ? conf_index++ : conf_index = 0;
 
     bt_trig[0] = 0;
   }
@@ -159,30 +244,42 @@ void config()
     switch (conf_index)
     {
     case 0: //mps
-      if (conf_list[C_MPS] > 1)
+      if (conf_list[C_MPS] > conf_min[C_MPS])
+      {
         conf_list[C_MPS] -= 1;
+      }
       break;
 
     case 1: //hist
-      if (conf_list[C_HIST] > 2)
+      if (conf_list[C_HIST] > conf_min[C_HIST])
+      {
         conf_list[C_HIST] -= 1;
+      }
 
       break;
 
     case 2:
-
+      if (conf_list[C_SAMP] > conf_min[C_SAMP])
+      {
+        conf_list[C_SAMP] -= 1;
+      }
       break;
-
     case 3:
+      if (conf_list[C_LOG] > conf_min[C_LOG])
+      {
+        conf_list[C_LOG] -= 1;
+      }
+      break;
+    case 4:
       offset = getVolt();
 
       break;
-    case 4:
+    case 5:
       conf_flag = false;
       conf_index = 0;
+      conf_save();
       break;
     }
-  
 
     bt_trig[1] = false;
   }
@@ -191,49 +288,79 @@ void config()
     switch (conf_index)
     {
     case 0: //mps
-      if (conf_list[C_MPS] < 30)
+      if (conf_list[C_MPS] < conf_max[C_MPS])
+      {
         conf_list[C_MPS] += 1;
+      }
       break;
 
     case 1: //hist
-      if (conf_list[C_HIST] < 100)
+      if (conf_list[C_HIST] < conf_max[C_HIST])
+      {
         conf_list[C_HIST] += 1;
-
+      }
       break;
 
     case 2:
-
+      if (conf_list[C_SAMP] < conf_max[C_SAMP])
+      {
+        conf_list[C_SAMP] += 1;
+      }
       break;
-
     case 3:
-      offset = getVolt();
+      if (conf_list[C_LOG] < conf_max[C_LOG])
+      {
+        conf_list[C_LOG] += 1;
+      }
       break;
     case 4:
+      offset = getVolt();
+      break;
+    case 5:
       conf_flag = 0;
       conf_index = 0;
+      conf_save();
       break;
     }
     bt_trig[2] = false;
   }
-  text("measure/sec:", 10, 7 + 3);
+  text("frame/sec:", 10, 8 + 3);
   text(String(conf_list[C_MPS]));
-  text("history shows:", 10, 7 * 2 + 3);
+  text("history shows:", 10, 8 * 2 + 3);
   text(String(conf_list[C_HIST]));
+  text("sampling/sec:", 10, 8 * 3 + 3);
+  text(String(conf_list[C_SAMP]));
+  text("log/sec:", 10, 8 * 4 + 3);
+  text(String(conf_list[C_LOG]));
   //text("show points:",10,7*3+3);
-  text("offset:reset ...", 10, 7 * 4 + 3);
+  text("offset: ...", 10, 8 * 5 + 3);
   text(String(offset));
   text("V");
-  text("exit", 10, 7 * 5 + 3);
+  text("exit", 10, 8 * 6 + 3);
+  display.fillRect(8, (conf_index + 1) * 8 + 2, 127 - 8, 9, INVERSE);
   upd
 }
-
-long btupdate = 0;
 void loop()
 {
-  if (btupdate <= millis())
+  unsigned long time = millis();
+  if (btupdate <= time)
   {
-    btupdate = millis() + 50;
+    btupdate = time + 50;
     bt_update();
+  }
+
+  if (hupdate <= time)
+  {
+    hupdate = time + 1000 / conf_list[C_SAMP];
+    histupdate();
+  }
+  if (lupdate <= time)
+  {
+    if (conf_list[C_LOG] != 0)
+    {
+      lupdate = time + 1000 / conf_list[C_LOG];
+      logupdate();
+    }
   }
   if (conf_flag)
   {
@@ -245,10 +372,14 @@ void loop()
     {
       bt_trig[0] = false;
       conf_flag = true;
+      bt_trig[1] = false;
+      bt_trig[2] = false;
     }
-    if (update <= millis())
+
+    if (update <= time)
     {
-      update = millis() + 1000 / conf_list[C_MPS];
+      update = time + 1000 / conf_list[C_MPS];
+
       gPlot();
     }
   }
