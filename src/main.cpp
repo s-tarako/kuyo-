@@ -16,7 +16,7 @@ Adafruit_SSD1306 display(128, 64, &Wire, -1);
 #define C_HIST 1
 #define C_SAMP 2
 #define C_LOG 3
-#define C_HIST_MAX 80
+#define C_HIST_MAX 120
 #define st(p) (!digitalRead(p))
 /*
 pinmap:
@@ -25,24 +25,27 @@ Button:3,4,5
 SPI(SD):13,12,11,10
 */
 //button
+
 char bt_pin[3] = {2, 3, 4};
 bool bt_state[3] = {0, 0, 0};
 bool bt_trig[3] = {0, 0, 0};
 //config
 uint8_t conf_list[conf_num] = {
-    10, //fps
-    40, //hist
-    10, //samples
+    20, //fps
+    60, //hist
+    20, //samples
     2   //log
 };
 const unsigned char conf_min[conf_num] PROGMEM = {
     1, 2, 1, 0};
 const unsigned char conf_max[conf_num] PROGMEM = {
-    30, 79, 30, 20};
+    30, 120, 100, 20};
 
 bool conf_flag = false;
 float offset = 0;
 bool SD_OK;
+bool SD_LOG;
+int SD_LOGNO = 0;
 
 //values
 double rangeB = 0;
@@ -53,12 +56,13 @@ unsigned long btupdate = 0;
 unsigned long update = 0;
 unsigned long hupdate = 0;
 unsigned long lupdate = 0;
+unsigned long LOG_OFFSET = 0;
 float getVolt()
 {
-  float sum = 0;
+  double sum = 0;
   for (int i = 0; i < 10; i++)
   {
-    sum += analogRead(A0) * 5.0 / 1024;
+    sum += (float)analogRead(A0) * 5.0 / 1024;
   }
   return sum / 10;
 }
@@ -78,9 +82,9 @@ bool conf_load()
     for (int i = 0; i < conf_num; i++)
     {
       t_value = EEPROM.read(i + 1);
-      if (t_value <= conf_min[i] && t_value >= conf_max[i]&&t_value==0)
+      if (t_value <= conf_min[i] && t_value >= conf_max[i] && t_value == 0)
         return 0;
-      conf_list[i] = t_value-1;
+      conf_list[i] = t_value - 1;
     }
   }
   else
@@ -94,7 +98,38 @@ void conf_save()
   EEPROM.write(0, 254);
   for (int i = 0; i < conf_num; i++)
   {
-    EEPROM.write(i + 1, conf_list[i]+1);
+    EEPROM.write(i + 1, conf_list[i] + 1);
+  }
+}
+void conf_reset()
+{
+  display.clearDisplay();
+  text("reset?",0,0);
+  text("no(left):yes(right)",0,10);
+  upd
+  delay(500);
+  while(1){
+    if(st(bt_pin[1])){
+      while(st(bt_pin[1])){}
+      break;
+    }
+    if(st(bt_pin[2])){
+      while(st(bt_pin[2])){}
+       EEPROM.write(0, 0);
+  for (int i = 0; i < conf_num; i++)
+  {
+    EEPROM.write(i + 1,0);
+  } text("reset success.\nplease reboot",0,20);
+  upd
+  asm volatile ("  jmp 0");  
+  break;
+    }
+  }
+
+  EEPROM.write(0, 0);
+  for (int i = 0; i < conf_num; i++)
+  {
+    EEPROM.write(i + 1,0);
   }
 }
 void setup()
@@ -124,18 +159,10 @@ void setup()
   pinMode(bt_pin[0], INPUT_PULLUP);
   pinMode(bt_pin[1], INPUT_PULLUP);
   pinMode(bt_pin[2], INPUT_PULLUP);
-  SD.remove("log.csv");
-
-  File dataFile = SD.open("log.csv", FILE_WRITE);
-  if (dataFile)
-  {
-    dataFile.println("sec,A");
-    dataFile.close();
-  }
 }
 void SD_log(String text)
 {
-  File dataFile = SD.open("log.csv", FILE_WRITE);
+  File dataFile = SD.open("log" + String(SD_LOGNO) + ".csv", FILE_WRITE);
   if (dataFile)
   {
     dataFile.println(text);
@@ -163,9 +190,10 @@ void histupdate()
 }
 void logupdate()
 {
-  if (SD_OK)
-    SD_log(String((float)millis() / 1000, 1) + "," + String(amphist[C_HIST], 1));
-  Serial.println(String((float)millis() / 1000, 1) + "," + String(amphist[C_HIST], 1));
+  if (SD_OK && SD_LOG)
+    SD_log(String((float)(millis()-LOG_OFFSET) / 1000, 2)+ "," + String(amphist[conf_list[C_HIST-1]], 2));
+
+  Serial.println(String(amphist[conf_list[C_HIST-1]],2));
 }
 
 #define GH 51
@@ -208,7 +236,7 @@ void gPlot()
   text("Avg:", 0, 56);
   text(String(avg, avg >= 10 || avg <= -10 ? 1 : 2));
   text("A");
-  display.drawPixel(127, 63, SD_OK);
+  display.drawPixel(127, 63, SD_OK && SD_LOG);
   upd
 }
 char conf_index = 0;
@@ -317,9 +345,7 @@ void config()
       offset = getVolt();
       break;
     case 5:
-      conf_flag = 0;
-      conf_index = 0;
-      conf_save();
+      conf_reset();
       break;
     }
     bt_trig[2] = false;
@@ -336,7 +362,7 @@ void config()
   text("offset: ...", 10, 8 * 5 + 3);
   text(String(offset));
   text("V");
-  text("exit", 10, 8 * 6 + 3);
+  text("exit&save / reset", 10, 8 * 6 + 3);
   display.fillRect(8, (conf_index + 1) * 8 + 2, 127 - 8, 9, INVERSE);
   upd
 }
@@ -368,6 +394,26 @@ void loop()
   }
   else
   {
+    if (bt_trig[1]&&SD_OK)
+    {
+      SD_LOG = !SD_LOG;
+      if (SD_LOG)
+      {
+        LOG_OFFSET=millis();
+        while (SD.exists("log" + String(SD_LOGNO) + ".csv"))
+        {
+          SD_LOGNO++;
+        }
+
+        File dataFile = SD.open("log" + String(SD_LOGNO) + ".csv", FILE_WRITE);
+        if (dataFile)
+        {
+          dataFile.println("sec,A");
+          dataFile.close();
+        }
+      }
+      bt_trig[1] = 0;
+    }
     if (bt_trig[0])
     {
       bt_trig[0] = false;
