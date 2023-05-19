@@ -25,10 +25,11 @@ Button:3,4,5
 SPI(SD):13,12,11,10
 */
 //button
-
 char bt_pin[3] = {2, 3, 4};
 bool bt_state[3] = {0, 0, 0};
 bool bt_trig[3] = {0, 0, 0};
+
+
 //config
 uint8_t conf_list[conf_num] = {
     20, //fps
@@ -36,6 +37,7 @@ uint8_t conf_list[conf_num] = {
     20, //samples
     2   //log
 };
+String unit="A";
 const unsigned char conf_min[conf_num] PROGMEM = {
     1, 2, 1, 0};
 const unsigned char conf_max[conf_num] PROGMEM = {
@@ -43,20 +45,24 @@ const unsigned char conf_max[conf_num] PROGMEM = {
 
 bool conf_flag = false;
 float offset = 0;
-bool SD_OK;
-bool SD_LOG;
-int SD_LOGNO = 0;
+
+//SD
+bool sd_ok;
+bool sd_logflag;
+int sd_logno = 0;
 
 //values
 double rangeB = 0;
 double rangeU = 0;
 double avg = 0;
-float amphist[C_HIST_MAX];
+float valhist[C_HIST_MAX];
 unsigned long btupdate = 0;
 unsigned long update = 0;
 unsigned long hupdate = 0;
+unsigned long a_hupdate = 0;
 unsigned long lupdate = 0;
-unsigned long LOG_OFFSET = 0;
+unsigned long log_offset = 0;
+
 float getVolt()
 {
   double sum = 0;
@@ -65,6 +71,9 @@ float getVolt()
     sum += (float)analogRead(A0) * 5.0 / 1024;
   }
   return sum / 10;
+}
+float getValue(){
+  return getAmp;
 }
 void text(String text, int posx = -1, int posy = -1)
 {
@@ -149,10 +158,10 @@ void setup()
   digitalWrite(LED_BUILTIN, HIGH);
   text("config loading:", 0, 7 * 1);
   text(conf_load() ? "OK" : "failed");
-  text("SD initalize:", 0, 7 * 2);
+  text("SD initialize:", 0, 7 * 2);
   Serial.begin(115200);
-  SD_OK = SD.begin(10);
-  text(SD_OK ? "OK" : "failed");
+  sd_ok = SD.begin(10);
+  text(sd_ok ? "OK" : "failed");
   upd
       delay(2000);
   display.clearDisplay();
@@ -162,7 +171,7 @@ void setup()
 }
 void SD_log(String text)
 {
-  File dataFile = SD.open("log" + String(SD_LOGNO) + ".csv", FILE_WRITE);
+  File dataFile = SD.open("log" + String(sd_logno) + ".csv", FILE_WRITE);
   if (dataFile)
   {
     dataFile.println(text);
@@ -177,23 +186,24 @@ void histupdate()
 
   for (int i = 0; i < conf_list[C_HIST] - 1; i++)
   {
-    amphist[i] = amphist[i + 1];
-    rangeB = min(amphist[i], rangeB);
-    rangeU = max(amphist[i], rangeU);
-    avg += amphist[i];
+    valhist[i] = valhist[i + 1];
+    rangeB = min(valhist[i], rangeB);
+    rangeU = max(valhist[i], rangeU);
+    avg += valhist[i];
   }
-  amphist[conf_list[C_HIST] - 1] = getAmp;
-  avg += amphist[conf_list[C_HIST] - 1];
-  rangeB = min(amphist[conf_list[C_HIST] - 1], rangeB);
-  rangeU = max(amphist[conf_list[C_HIST] - 1], rangeU);
+  valhist[conf_list[C_HIST] - 1] = getValue();
+  avg += valhist[conf_list[C_HIST] - 1];
+  rangeB = min(valhist[conf_list[C_HIST] - 1], rangeB);
+  rangeU = max(valhist[conf_list[C_HIST] - 1], rangeU);
   avg /= conf_list[C_HIST];
+  a_hupdate=millis();
 }
 void logupdate()
 {
-  if (SD_OK && SD_LOG)
-    SD_log(String((float)(millis()-LOG_OFFSET) / 1000, 2)+ "," + String(amphist[conf_list[C_HIST-1]], 2));
+  if (sd_ok && sd_logflag)
+    SD_log(String((float)(millis()-log_offset) / 1000, 2)+ "," + String(valhist[conf_list[C_HIST-1]], 2));
 
-  Serial.println(String(amphist[conf_list[C_HIST-1]],2));
+  Serial.println(String(valhist[conf_list[C_HIST-1]],2));
 }
 
 #define GH 51
@@ -201,42 +211,50 @@ void logupdate()
 void gPlot()
 {
 
+
   display.clearDisplay();
-  line(GSX - 1, 0, GSX - 1, 55);
-  line(GSX - 1, 55, 127, 55);
+    int period=conf_list[C_HIST]*(1000/conf_list[C_SAMP]);
+  float period_c=period/1000;
+  for(int i=0;i<period_c;i++){
+      
+       display.drawLine(
+          127-round(map(i*100,0,period_c*100,0,127-GSX)),
+          GH,
+         127-round(map(i*100,0,period_c*100,0,127-GSX)),
+          GH+1,
+          WHITE);
+
+  }
+  int goffset=-map((millis()-a_hupdate),0,(1000 / conf_list[C_SAMP]),0, 120/(conf_list[C_HIST]-1));
   for (int i = 0; i < conf_list[C_HIST]; i++)
   {
     if (i != 0)
     {
       display.drawLine(
-          round(map(i - 1, 0, conf_list[C_HIST] - 1, GSX, 127)),
-          GH - round(map(amphist[i - 1] * 100, rangeB * 100, rangeU * 100, 0, GH)),
-          round(map(i, 0, conf_list[C_HIST] - 1, GSX, 127)),
-          GH - round(map(amphist[i] * 100, rangeB * 100, rangeU * 100, 0, GH)),
-          INVERSE);
-    }
-    else
-    {
-      display.drawPixel(
-          round(map(i, 0, conf_list[C_HIST] - 1, GSX, 127)),
-          GH - round(map(amphist[i] * 100, rangeB * 100, rangeU * 100, 0, GH)),
-          INVERSE);
+          round(map(i - 1, 0, conf_list[C_HIST] - 1, GSX, 127))+goffset,
+          GH - round(map(valhist[i - 1] * 100, rangeB * 100, rangeU * 100, 0, GH)),
+          round(map(i, 0, conf_list[C_HIST] - 1, GSX, 127))+goffset,
+          GH - round(map(valhist[i] * 100, rangeB * 100, rangeU * 100, 0, GH)),
+          WHITE);
     }
   }
+  display.fillRect(0,0,GSX,GH,BLACK);
+  line(GSX - 1, 0, GSX - 1, 55);
+  line(GSX - 1, 55, 127, 55);
   line(0, 0, GSX - 1, 0);
   line(0, GH, GSX - 1, GH);
   text(String(rangeU, rangeU >= 10 || rangeU <= -10 ? 0 : 1), 0, 1);
   double centerline = ((rangeB + rangeU) / 2);
   text(String(centerline, centerline >= 10 || centerline <= -10 ? 0 : 1), 0, map(centerline * 100, rangeB * 100, rangeU * 100, 0, GH) - 3);
-  line(GSX, map(centerline * 100, rangeB * 100, rangeU * 100, 0, GH), 127, map(centerline * 100, rangeB * 100, rangeU * 100, 0, GH));
+  line(GSX,GH/2, 127, GH/2);
   text(String(rangeB, rangeB >= 10 || rangeB <= -10 ? 0 : 1), 0, GH - 8);
   text("Val:", 64, 56);
-  text(String(amphist[conf_list[C_HIST] - 1], 2));
-  text("A");
+  text(String(valhist[conf_list[C_HIST] - 1], 2));
+  text(unit);
   text("Avg:", 0, 56);
   text(String(avg, avg >= 10 || avg <= -10 ? 1 : 2));
-  text("A");
-  display.drawPixel(127, 63, SD_OK && SD_LOG);
+  text(unit);
+  display.drawPixel(127, 63, sd_ok && sd_logflag);
   upd
 }
 char conf_index = 0;
@@ -371,7 +389,7 @@ void loop()
   unsigned long time = millis();
   if (btupdate <= time)
   {
-    btupdate = time + 50;
+    btupdate = time + 20;
     bt_update();
   }
 
@@ -394,21 +412,21 @@ void loop()
   }
   else
   {
-    if (bt_trig[1]&&SD_OK)
+    if (bt_trig[1]&&sd_ok)
     {
-      SD_LOG = !SD_LOG;
-      if (SD_LOG)
+      sd_logflag = !sd_logflag;
+      if (sd_logflag)
       {
-        LOG_OFFSET=millis();
-        while (SD.exists("log" + String(SD_LOGNO) + ".csv"))
+        log_offset=millis();
+        while (SD.exists("log" + String(sd_logno) + ".csv"))
         {
-          SD_LOGNO++;
+          sd_logno++;
         }
 
-        File dataFile = SD.open("log" + String(SD_LOGNO) + ".csv", FILE_WRITE);
+        File dataFile = SD.open("log" + String(sd_logno) + ".csv", FILE_WRITE);
         if (dataFile)
         {
-          dataFile.println("sec,A");
+          dataFile.println("sec,"+unit);
           dataFile.close();
         }
       }
