@@ -10,7 +10,7 @@ Adafruit_SSD1306 display(128, 64, &Wire, -1);
   ;                        \
   display.drawLine(x, y, x2, y2, 2);
 #define upd display.display();
-#define getAmp ((getVolt() - offset) * 1000 / 50)
+#define getAmp ((getVolt() - offset) * 1000 / 40)
 #define conf_num 4
 #define C_MPS 0
 #define C_HIST 1
@@ -25,7 +25,7 @@ Button:3,4,5
 SPI(SD):13,12,11,10
 */
 //button
-char bt_pin[3] = {2, 3, 4};
+char bt_pin[3] = {6, 8, 7};
 bool bt_state[3] = {0, 0, 0};
 bool bt_trig[3] = {0, 0, 0};
 
@@ -46,7 +46,7 @@ const unsigned char conf_max[conf_num] PROGMEM = {
 bool conf_flag = false;
 float offset = 0;
 
-//SD
+//SD/;
 bool sd_ok;
 bool sd_logflag;
 int sd_logno = 0;
