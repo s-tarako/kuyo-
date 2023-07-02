@@ -1,4 +1,5 @@
 # AmpPlot
 
 arduino nano everyで使える電流計ロガー・プロッター
-供養
+
+2021作・供養
